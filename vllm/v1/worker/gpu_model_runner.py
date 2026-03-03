@@ -216,6 +216,7 @@ class AsyncGPUModelRunnerOutput(AsyncModelRunnerOutput):
         async_output_copy_stream: torch.cuda.Stream,
         vocab_size: int,
         entropy: torch.Tensor | None = None,
+        variance: torch.Tensor | None = None,
     ):
         self._model_runner_output = model_runner_output
         self._invalid_req_indices = invalid_req_indices
@@ -229,6 +230,7 @@ class AsyncGPUModelRunnerOutput(AsyncModelRunnerOutput):
         self.vocab_size = vocab_size
         self._logprobs_tensors = logprobs_tensors
         self._entropy = entropy
+        self._variance = variance
 
         # Initiate the copy on a separate stream, but do not synchronize it.
         default_stream = torch.cuda.current_stream()
@@ -247,6 +249,11 @@ class AsyncGPUModelRunnerOutput(AsyncModelRunnerOutput):
                 if self._entropy is not None
                 else None
             )
+            self._variance_cpu = (
+                self._variance.to("cpu", non_blocking=True)
+                if self._variance is not None
+                else None
+            )
             self.async_copy_ready_event.record()
 
     def get_output(self) -> ModelRunnerOutput:
@@ -261,6 +268,7 @@ class AsyncGPUModelRunnerOutput(AsyncModelRunnerOutput):
         del self._logprobs_tensors
         del self._sampled_token_ids
         del self._entropy
+        del self._variance
         if max_gen_len == 1:
             valid_sampled_token_ids = self.sampled_token_ids_cpu.tolist()
             for i in self._invalid_req_indices:
@@ -290,10 +298,25 @@ class AsyncGPUModelRunnerOutput(AsyncModelRunnerOutput):
                     entropy_lists.append(entropy_cpu[offset:offset + n])
                     offset += n
 
+        # Convert variance tensor to nested lists.
+        variance_lists = None
+        if self._variance_cpu is not None:
+            if max_gen_len == 1:
+                variance_lists = [[v] for v in self._variance_cpu.tolist()]
+            else:
+                variance_cpu = self._variance_cpu.tolist()
+                variance_lists = []
+                offset = 0
+                for token_ids in valid_sampled_token_ids:
+                    n = len(token_ids)
+                    variance_lists.append(variance_cpu[offset:offset + n])
+                    offset += n
+
         output = self._model_runner_output
         output.sampled_token_ids = valid_sampled_token_ids
         output.logprobs = logprobs_lists
         output.entropy = entropy_lists
+        output.variance = variance_lists
         return output
 
 
@@ -3021,9 +3044,11 @@ class GPUModelRunner(
         sampled_token_ids = sampler_output.sampled_token_ids
         logprobs_tensors = sampler_output.logprobs_tensors
         entropy_tensor = sampler_output.entropy
+        variance_tensor = sampler_output.variance
         invalid_req_indices = []
         logprobs_lists = None
         entropy_lists: list[list[float]] | None = None
+        variance_lists: list[list[float]] | None = None
         if not self.use_async_scheduling:
             # Get the valid generated tokens.
             max_gen_len = sampled_token_ids.shape[-1]
@@ -3040,6 +3065,9 @@ class GPUModelRunner(
                 if entropy_tensor is not None:
                     entropy_lists = [[e] for e in
                                      entropy_tensor.cpu().tolist()]
+                if variance_tensor is not None:
+                    variance_lists = [[v] for v in
+                                      variance_tensor.cpu().tolist()]
             else:
                 # Includes spec decode tokens.
                 valid_sampled_token_ids, logprobs_lists = RejectionSampler.parse_output(
@@ -3058,6 +3086,15 @@ class GPUModelRunner(
                     for token_ids in valid_sampled_token_ids:
                         n = len(token_ids)
                         entropy_lists.append(entropy_cpu[offset:offset + n])
+                        offset += n
+
+                if variance_tensor is not None:
+                    variance_cpu = variance_tensor.cpu().tolist()
+                    variance_lists = []
+                    offset = 0
+                    for token_ids in valid_sampled_token_ids:
+                        n = len(token_ids)
+                        variance_lists.append(variance_cpu[offset:offset + n])
                         offset += n
         else:
             valid_sampled_token_ids = []
@@ -3125,6 +3162,7 @@ class GPUModelRunner(
             req_id_to_index_output_copy,
             invalid_req_indices,
             entropy_lists,
+            variance_lists,
         )
 
     @contextmanager
@@ -3870,6 +3908,7 @@ class GPUModelRunner(
                 req_id_to_index_output_copy,
                 invalid_req_indices,
                 entropy_lists,
+                variance_lists,
             ) = self._bookkeeping_sync(
                 scheduler_output,
                 sampler_output,
@@ -3918,6 +3957,7 @@ class GPUModelRunner(
                 num_nans_in_logits=num_nans_in_logits,
                 cudagraph_stats=cudagraph_stats,
                 entropy=entropy_lists,
+                variance=variance_lists,
             )
 
         if not self.use_async_scheduling:
@@ -3934,6 +3974,7 @@ class GPUModelRunner(
                 async_output_copy_stream=self.async_output_copy_stream,
                 vocab_size=self.input_batch.vocab_size,
                 entropy=sampler_output.entropy,
+                variance=sampler_output.variance,
             )
         with record_function_or_nullcontext(
             "gpu_model_runner: set_async_sampled_token_ids"

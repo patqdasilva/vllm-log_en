@@ -13,3 +13,4 @@ class SamplerOutput:
     logprobs_tensors: LogprobsTensors | None
     num_nans: torch.Tensor | None
     entropy: torch.Tensor | None = None  # [num_reqs], float32
+    variance: torch.Tensor | None = None  # [num_reqs], float32
