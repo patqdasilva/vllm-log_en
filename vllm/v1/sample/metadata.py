@@ -42,3 +42,6 @@ class SamplingMetadata:
 
     # Speculative token ids
     spec_token_ids: list[list[int]] | None = None
+
+    # Whether any request in batch wants exact entropy
+    any_output_exact_entropy: bool = False

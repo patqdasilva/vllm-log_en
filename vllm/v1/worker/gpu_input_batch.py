@@ -160,6 +160,7 @@ class InputBatch:
         self.temperature_cpu = self.temperature_cpu_tensor.numpy()
         self.greedy_reqs: set[str] = set()
         self.random_reqs: set[str] = set()
+        self.entropy_reqs: set[str] = set()
 
         self.top_p = torch.empty((max_num_reqs,), dtype=torch.float32, device=device)
         self.top_p_cpu_tensor = torch.empty(
@@ -383,6 +384,9 @@ class InputBatch:
                     else sampling_params.logprobs
                 )
 
+            if sampling_params.output_exact_entropy:
+                self.entropy_reqs.add(req_id)
+
             if sampling_params.allowed_token_ids:
                 self.has_allowed_token_ids.add(req_id)
                 if self.allowed_token_ids_mask_cpu_tensor is None:
@@ -502,6 +506,7 @@ class InputBatch:
 
         self.greedy_reqs.discard(req_id)
         self.random_reqs.discard(req_id)
+        self.entropy_reqs.discard(req_id)
         self.top_p_reqs.discard(req_id)
         self.top_k_reqs.discard(req_id)
         self.frequency_penalties_reqs.discard(req_id)
@@ -853,6 +858,7 @@ class InputBatch:
             allowed_token_ids_mask=allowed_token_ids_mask,
             bad_words_token_ids=self.bad_words_token_ids,
             logitsprocs=self.logitsprocs,
+            any_output_exact_entropy=self.any_output_exact_entropy,
         )
 
     def get_pooling_params(self) -> list[PoolingParams]:
@@ -1024,6 +1030,10 @@ class InputBatch:
     @property
     def max_num_logprobs(self) -> int | None:
         return max(self.num_logprobs.values()) if self.num_logprobs else None
+
+    @property
+    def any_output_exact_entropy(self) -> bool:
+        return len(self.entropy_reqs) > 0
 
     @property
     def no_allowed_token_ids(self) -> bool:

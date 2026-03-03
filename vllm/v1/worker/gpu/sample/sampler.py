@@ -66,7 +66,7 @@ class Sampler:
         # NOTE(woosuk): We intentionally compute num_nans before sampling to make clear
         # that num_nans is computed before applying penalties and temperature.
         num_nans = get_num_nans(logits) if self.compute_nans else None
-        sampled, processed_logits = self.sample(
+        sampled, processed_logits, entropy = self.sample(
             logits,
             expanded_idx_mapping,
             idx_mapping_np,
@@ -95,6 +95,7 @@ class Sampler:
             sampled_token_ids=sampled.view(-1, 1),
             logprobs_tensors=logprobs_tensors,
             num_nans=num_nans,
+            entropy=entropy,
         )
         return sampler_output
 
@@ -106,7 +107,7 @@ class Sampler:
         pos: torch.Tensor,
         input_ids: torch.Tensor,
         expanded_local_pos: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
         # Copy logits to a new FP32 tensor.
         logits = torch.empty_like(logits, dtype=torch.float32).copy_(logits)
 
@@ -142,6 +143,13 @@ class Sampler:
         # Apply min_p in place.
         self.sampling_states.apply_min_p(logits, expanded_idx_mapping, idx_mapping_np)
 
+        # Compute entropy before top-k/top-p truncation.
+        entropy = None
+        if self.sampling_states.any_wants_entropy(idx_mapping_np):
+            log_probs = logits.log_softmax(dim=-1, dtype=torch.float32)
+            probs = log_probs.exp()
+            entropy = -(probs * log_probs).sum(dim=-1)
+
         # Apply top_k and/or top_p. This might or might not return a new tensor.
         logits = self.sampling_states.apply_top_k_top_p(
             logits, expanded_idx_mapping, idx_mapping_np
@@ -156,4 +164,4 @@ class Sampler:
             pos,
             apply_temperature=False,
         )
-        return sampled, logits
+        return sampled, logits, entropy

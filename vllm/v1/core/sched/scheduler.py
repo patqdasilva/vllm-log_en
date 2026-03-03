@@ -1268,6 +1268,7 @@ class Scheduler(SchedulerInterface):
         num_nans_in_logits = model_runner_output.num_nans_in_logits
         kv_connector_output = model_runner_output.kv_connector_output
         cudagraph_stats = model_runner_output.cudagraph_stats
+        entropy = model_runner_output.entropy
 
         perf_stats: PerfStats | None = None
         if self.perf_metrics and self.perf_metrics.is_enabled():
@@ -1346,6 +1347,7 @@ class Scheduler(SchedulerInterface):
 
             stopped = False
             new_logprobs = None
+            new_entropy = None
             new_token_ids = generated_token_ids
             pooler_output = pooler_outputs[req_index] if pooler_outputs else None
             kv_transfer_params = None
@@ -1386,6 +1388,14 @@ class Scheduler(SchedulerInterface):
             ):
                 new_logprobs = logprobs.slice_request(req_index, len(new_token_ids))
 
+            # Extract per-token entropy if needed.
+            if (
+                request.sampling_params is not None
+                and request.sampling_params.output_exact_entropy
+                and entropy is not None
+            ):
+                new_entropy = entropy[req_index]
+
             if new_token_ids and self.structured_output_manager.should_advance(request):
                 struct_output_request = request.structured_output_request
                 assert struct_output_request is not None
@@ -1425,6 +1435,7 @@ class Scheduler(SchedulerInterface):
                         num_cached_tokens=request.num_cached_tokens,
                         num_external_computed_tokens=request.num_external_computed_tokens,
                         routed_experts=routed_experts,
+                        entropy=new_entropy,
                         num_nans_in_logits=request.num_nans_in_logits,
                     )
                 )
